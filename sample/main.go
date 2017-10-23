@@ -8,6 +8,7 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/gorilla/mux"
 	"github.com/xtraclabs/rrl"
+	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 const maxRequestsPerSecond = 20
@@ -39,6 +40,12 @@ func RateLimitedHandler(redisClient *redis.Client, h func(w http.ResponseWriter,
 }
 
 func main() {
+	var (
+		port = kingpin.Flag("port", "port to listen on").Required().Int()
+	)
+
+	kingpin.Parse()
+
 	log.SetLevel(log.DebugLevel)
 
 	client := redis.NewClient(&redis.Options{
@@ -51,5 +58,7 @@ func main() {
 	r.HandleFunc("/foo", RateLimitedHandler(client, SampleHandler))
 	http.Handle("/", r)
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	listenOn := fmt.Sprintf(":%d", *port)
+
+	log.Fatal(http.ListenAndServe(listenOn, nil))
 }
