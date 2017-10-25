@@ -18,7 +18,7 @@ I then opened my browser on the local url (printed to standard out, for me it
 was localhost:8089), and dialed up the transaction to the 18.6 - 19.8 RPS
 rate, which was 65 user. This will run at a steady rate with no errors.
 
-I then pushed it to 75 users, which resulted in HTTP 429 errors.
+I then pushed it to 75 users, which resulted in some HTTP 429 errors.
 
 I was also able to do the same thing running two servers and running 2 locust sessions, observing
 the same behavior for the same totals of users.

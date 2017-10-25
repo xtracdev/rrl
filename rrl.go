@@ -78,7 +78,7 @@ func (rl *RateLimiter) AllowRequest(id string) (bool, error) {
 	log.Debug("new element ", element)
 
 	newZSetExpireTime := rl.intervalInMillis/1000
-	
+
 	cmd := rl.client.Eval(concurrent_requests_limiter_lua, []string{id},rl.maxInInterval, now,element, clearBefore, newZSetExpireTime)
 	if cmd.Err() != nil {
 		log.Warn("script execution error", cmd.Err().Error())
