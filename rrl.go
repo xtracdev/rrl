@@ -17,6 +17,10 @@ local key = KEYS[1]
 local capacity = tonumber(ARGV[1])
 local timestamp = tonumber(ARGV[2])
 local id = ARGV[3]
+local clearBefore = tonumber(ARGV[4])
+
+
+redis.call("zremrangebyscore", key, 0, clearBefore)
 
 local count = redis.call("zcard", key)
 local allowed = count < capacity
@@ -71,7 +75,6 @@ func (rl *RateLimiter) AllowRequest(id string) (bool, error) {
 
 	log.Debug("new element ", element)
 
-	rl.client.ZRemRangeByScore(id,"0",fmt.Sprintf("%d",clearBefore))
 	defer func() {
 		log.Debug("keep the zset alive")
 		boolCmd := rl.client.Expire(id, time.Duration(rl.intervalInMillis/1000)* time.Second)
@@ -81,7 +84,7 @@ func (rl *RateLimiter) AllowRequest(id string) (bool, error) {
 
 	}()
 
-	cmd := rl.client.Eval(concurrent_requests_limiter_lua, []string{id},rl.maxInInterval, now,element)
+	cmd := rl.client.Eval(concurrent_requests_limiter_lua, []string{id},rl.maxInInterval, now,element, clearBefore)
 	if cmd.Err() != nil {
 		log.Warn("script execution error", cmd.Err().Error())
 		return false, cmd.Err()
