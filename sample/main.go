@@ -23,14 +23,14 @@ func RateLimitedHandler(redisClient *redis.Client, h func(w http.ResponseWriter,
 		//Here we are assuming everyone is app 1 - we could pull this from the JWT to apply different
 		//policies per application.
 
-		timeleft, err := governor.TimeLeft("a1")
+		allowed, err := governor.AllowRequest("a1")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		if timeleft != 0 {
-			http.Error(w, fmt.Sprintf("Retry request in %d milliseconds", timeleft), http.StatusTooManyRequests)
+		if !allowed {
+			http.Error(w, fmt.Sprintf("Exceeded allowed %d requests per second rate", maxRequestsPerSecond), http.StatusTooManyRequests)
 			return
 		}
 

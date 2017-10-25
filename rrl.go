@@ -3,13 +3,30 @@ package rrl
 import (
 	"crypto/rand"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/go-redis/redis"
+	"errors"
 )
+
+
+const concurrent_requests_limiter_lua = `
+local key = KEYS[1]
+
+local capacity = tonumber(ARGV[1])
+local timestamp = tonumber(ARGV[2])
+local id = ARGV[3]
+
+local count = redis.call("zcard", key)
+local allowed = count < capacity
+
+if allowed then
+	redis.call("zadd", key, timestamp, id)
+end
+
+return { allowed, count }
+`
 
 func uuid() (string, error) {
 	b := make([]byte, 16)
@@ -40,91 +57,43 @@ func NewRateLimiter(intervalInMillis int64, maxInInterval int, client *redis.Cli
 	}
 }
 
-//TimeLeft returns the number of milli-seconds until the next request should be
-//made. Zero is returned if there are remaining requests availale within the parameters
-//of the rate limiter. For implementing rate limiting, if zero is returned, the
-//request should be allowed, other wise it should be rejected.
-func (rl *RateLimiter) TimeLeft(id string) (int, error) {
+//AllowRequest true if the request for the given id falls within
+//the max allowed requests for the time interval, false otherwise.
+func (rl *RateLimiter) AllowRequest(id string) (bool, error) {
 	now := time.Now().UnixNano() / 1000               //microseconds
 	clearBefore := now - (rl.intervalInMillis * 1000) //microseconds
 	log.Debug("clearBefore ", clearBefore)
 
 	element, err := uuid()
 	if err != nil {
-		return -1, err
+		return false, err
 	}
 
 	log.Debug("new element ", element)
 
-	pipeline := rl.client.TxPipeline()
-	pipeline.ZRemRangeByScore(id, "0", fmt.Sprintf("%d", clearBefore))
-	pipeline.ZRangeWithScores(id, 0, -1)
-	pipeline.ZAdd(id, redis.Z{Score: float64(now), Member: element})
-	pipeline.Expire(id, time.Duration(rl.intervalInMillis/1000)*time.Second)
-
-	var cmdErr []redis.Cmder
-	var pipelineErr error
-	cmdErr, pipelineErr = pipeline.Exec()
-	if pipelineErr != nil {
-		return -1, pipelineErr
-	}
-
-	log.Debug("z rem range result ", cmdErr[0])
-
-	rangeWithScoresResult := cmdErr[1]
-
-	elements := zparts(rangeWithScoresResult.String())
-	//log.Debug(elements)
-	log.Debugf("zset has %d elements", 1+len(elements))
-
-	//Ok to keep making requests?
-	if len(elements) < rl.maxInInterval {
-		return 0, nil
-	}
-
-	//Since the max requests for the interval have been made, the next time a request
-	//can be made is when a slot opens up in the zparts. That will the difference between
-	//the timestamp of the oldest element and the length of the interval.
-	timeleft := (int64(elements[0].Score) - clearBefore) / 1000 //divide by 1000 to return time left in ms
-
-	log.Debugf("timeleft %d", timeleft)
-
-	return int(timeleft), nil
-}
-
-//Parse the output of the range with scores command in redis. The output looks like
-//[{1.508595813639e+12 1a2942d7-f536-4b6b-a312-88c1465c18c5} {1.508595815287e+12 6bc8a7a7-1435-4a33-8b7d-32edabedd61b}]
-func zparts(zstring string) []redis.Z {
-	var elements []redis.Z
-
-	parts := strings.Split(zstring, ":")
-
-	if len(parts) < 2 {
-		return elements
-	}
-
-	zslice := strings.TrimSpace(parts[1])
-	if zslice == "[]" {
-		return elements
-	}
-
-	zslice = strings.Trim(zslice, "[]")
-	zpairs := strings.Split(zslice, " ")
-
-	for i := 0; i < len(zpairs); i += 2 {
-		rawScore := zpairs[i]
-		rawElement := zpairs[i+1]
-
-		score, _ := strconv.ParseFloat(strings.Trim(rawScore, "{"), 64)
-		element := strings.Trim(rawElement, "}")
-
-		z := redis.Z{
-			Score:  score,
-			Member: element,
+	rl.client.ZRemRangeByScore(id,"0",fmt.Sprintf("%d",clearBefore))
+	defer func() {
+		log.Debug("keep the zset alive")
+		boolCmd := rl.client.Expire(id, time.Duration(rl.intervalInMillis/1000)* time.Second)
+		if boolCmd.Err() != nil {
+			fmt.Println("warning - error setting expire on zset", boolCmd.Err().Error())
 		}
 
-		elements = append(elements, z)
+	}()
+
+	cmd := rl.client.Eval(concurrent_requests_limiter_lua, []string{id},rl.maxInInterval, now,element)
+	if cmd.Err() != nil {
+		log.Warn("script execution error", cmd.Err().Error())
+		return false, cmd.Err()
 	}
 
-	return elements
+	cmdOutput := cmd.Val()
+	log.Debug("script output ", cmdOutput)
+	outputSlice, ok := cmdOutput.([]interface{})
+	if !ok {
+		return false, errors.New("Unexcepted result type from Redis script execution")
+	}
+
+	return outputSlice[0] != nil, nil
 }
+
